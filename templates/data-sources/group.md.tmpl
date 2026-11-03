@@ -1,0 +1,27 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+## Example Usage
+
+{{ tffile "examples/data-sources/onepassword_group/data-source.tf" }}
+
+## Limitations
+
+The 1Password SDK can get a group by its UUID, but it cannot list groups. A lookup by `name` therefore reads the groups that have access to the vaults the provider can see, and compares their names. This has some consequences:
+
+- **Groups without vault access are not found by name.** A new group, or one whose access was removed from every vault, can only be looked up by `uuid`.
+- **Only the vaults the provider can see are searched.** A service account sees only the vaults granted to it, so it finds fewer groups than a user who sees every vault. A vault whose access can't be read is skipped; run with `TF_LOG=WARN` to see which.
+- **A lookup by name gets slower with more vaults.** It reads the access of every vault and every group it finds; with 32 vaults it takes around 10 seconds. The scan runs once per run and is shared by every lookup by name in it. A lookup by `uuid` reads a single group.
+- **Changes during a run are not seen.** A group created, renamed or given vault access after the first lookup by name in a run is only found in the next run.
+- **The name must be unique.** When several groups have the name, the lookup fails; use `uuid` instead.
+- **Not available with 1Password Connect.** Use service account or desktop app authentication.
+
+{{ .SchemaMarkdown | trimspace }}

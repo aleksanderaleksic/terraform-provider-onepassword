@@ -191,6 +191,7 @@ func (p *OnePasswordProvider) DataSources(ctx context.Context) []func() datasour
 		NewOnePasswordItemDataSource,
 		NewOnePasswordVaultDataSource,
 		NewOnePasswordEnvironmentDataSource,
+		NewOnePasswordGroupDataSource,
 	}
 }
 

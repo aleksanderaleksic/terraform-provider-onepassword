@@ -265,6 +265,18 @@ func (c *Client) GetEnvironmentVariables(_ context.Context, _ string) ([]model.E
 	return nil, fmt.Errorf("1Password Environments are only supported when using service account or desktop app authentication; they are not available with 1Password Connect")
 }
 
+// GetGroup returns an error because groups can only be read when using the 1Password SDK (service account or desktop app authentication), not with 1Password Connect.
+func (c *Client) GetGroup(_ context.Context, _ string) (*model.Group, error) {
+	return nil, errGroupsNotSupported
+}
+
+// GetGroupsByName returns an error because groups can only be read when using the 1Password SDK (service account or desktop app authentication), not with 1Password Connect.
+func (c *Client) GetGroupsByName(_ context.Context, _ string) ([]model.Group, error) {
+	return nil, errGroupsNotSupported
+}
+
+var errGroupsNotSupported = fmt.Errorf("1Password groups are only supported when using service account or desktop app authentication; they are not available with 1Password Connect")
+
 func (c *Client) GetFileContent(_ context.Context, file *model.ItemFile, itemUUID, vaultUUID string) ([]byte, error) {
 	connectFile := &onepassword.File{
 		ID:          file.ID,
