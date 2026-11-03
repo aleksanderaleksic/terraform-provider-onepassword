@@ -87,7 +87,7 @@ func (r *OnePasswordVaultResource) Metadata(_ context.Context, req resource.Meta
 
 func (r *OnePasswordVaultResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Creating a vault fails when one with the same name already exists; import it instead. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.",
+		MarkdownDescription: "Manages a 1Password vault and its group access using service account or desktop app authentication. Not available with 1Password Connect. Destroying a vault deletes every item in it.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "The Terraform resource identifier in the format `vaults/<vault_id>`.",
@@ -123,7 +123,7 @@ func (r *OnePasswordVaultResource) Schema(_ context.Context, _ resource.SchemaRe
 		},
 		Blocks: map[string]schema.Block{
 			"group_permissions": schema.SetNestedBlock{
-				MarkdownDescription: "Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. When a group starts being managed while it already has different access, the plan warns which permissions applying replaces. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name.",
+				MarkdownDescription: "Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. When a group starts being managed while it already has different access, the plan warns which permissions applying replaces. Use the `onepassword_group` data source to look a group up by name.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"group_id": schema.StringAttribute{
