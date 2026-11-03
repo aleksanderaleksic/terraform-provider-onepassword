@@ -14,7 +14,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -112,12 +111,12 @@ func (r *OnePasswordVaultResource) Schema(_ context.Context, _ resource.SchemaRe
 				Optional:            true,
 			},
 			"allow_admins_access": schema.BoolAttribute{
-				MarkdownDescription: "Whether members of the Administrators group can access the vault. Defaults to `true`. This is only configurable when the vault is created, so changing it replaces the vault.",
+				MarkdownDescription: "Whether members of the Administrators group can access the vault. Defaults to `true`. 1Password only accepts it when the vault is created: changing it later is an error rather than a replacement, because replacing a vault deletes its items. An imported vault takes the configured value without checking it.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 				PlanModifiers: []planmodifier.Bool{
-					boolplanmodifier.RequiresReplace(),
+					createOnlyBool{},
 				},
 			},
 		},
@@ -238,7 +237,7 @@ func (r *OnePasswordVaultResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 	if len(access) > 0 {
-		if err := r.vaultManager.GrantVaultGroupPermissions(ctx, created.ID, access); err != nil {
+		if err := r.reconcileVaultGroupPermissions(ctx, created.ID, nil, access); err != nil {
 			cleanupErr := r.vaultManager.DeleteVault(ctx, created.ID)
 			if cleanupErr == nil {
 				resp.State.RemoveResource(ctx)
@@ -359,17 +358,28 @@ func (r *OnePasswordVaultResource) ImportState(ctx context.Context, req resource
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+// reconcileVaultGroupPermissions grants or updates the desired groups and revokes
+// the previously managed groups that are no longer desired. Whether a desired
+// group is granted or updated depends on the vault's actual access, not on
+// state: a group can already have access after an import, through
+// allow_admins_access, or from a change outside Terraform.
 func (r *OnePasswordVaultResource) reconcileVaultGroupPermissions(ctx context.Context, uuid string, previous, desired []model.VaultGroupAccess) error {
 	previousByGroup := vaultAccessByGroup(previous)
 	desiredByGroup := vaultAccessByGroup(desired)
 	var grants []model.VaultGroupAccess
 	var updates []model.VaultGroupAccess
 
+	vault, err := r.vaultManager.GetVaultDetails(ctx, uuid)
+	if err != nil {
+		return err
+	}
+	actualByGroup := vaultAccessByGroup(vault.GroupAccess)
+
 	for groupID, access := range desiredByGroup {
-		old, exists := previousByGroup[groupID]
+		actual, exists := actualByGroup[groupID]
 		if !exists {
 			grants = append(grants, access)
-		} else if old.Permissions != access.Permissions {
+		} else if actual.Permissions != access.Permissions {
 			updates = append(updates, access)
 		}
 	}
@@ -385,6 +395,9 @@ func (r *OnePasswordVaultResource) reconcileVaultGroupPermissions(ctx context.Co
 	}
 	for groupID := range previousByGroup {
 		if _, exists := desiredByGroup[groupID]; exists {
+			continue
+		}
+		if _, exists := actualByGroup[groupID]; !exists {
 			continue
 		}
 		if err := r.vaultManager.RevokeVaultGroupPermission(ctx, uuid, groupID); err != nil {
@@ -506,4 +519,31 @@ func vaultAccessByGroup(access []model.VaultGroupAccess) map[string]model.VaultG
 		result[permission.GroupID] = permission
 	}
 	return result
+}
+
+// createOnlyBool rejects changes to an attribute that can only be set when the
+// resource is created. Unlike RequiresReplace it never plans a replacement, and
+// it accepts the configured value when state has none (after an import).
+type createOnlyBool struct{}
+
+func (m createOnlyBool) Description(_ context.Context) string {
+	return "The value can only be set when the resource is created."
+}
+
+func (m createOnlyBool) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m createOnlyBool) PlanModifyBool(_ context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() || req.PlanValue.Equal(req.StateValue) {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		req.Path,
+		"Attribute can only be set at creation",
+		fmt.Sprintf("1Password does not allow changing %s on an existing vault. Change it in 1Password and update the configuration to match, or create a new vault.", req.Path),
+	)
 }

@@ -46,7 +46,7 @@ resource "onepassword_vault" "example" {
 
 ### Optional
 
-- `allow_admins_access` (Boolean) Whether members of the Administrators group can access the vault. Defaults to `true`. This is only configurable when the vault is created, so changing it replaces the vault.
+- `allow_admins_access` (Boolean) Whether members of the Administrators group can access the vault. Defaults to `true`. 1Password only accepts it when the vault is created: changing it later is an error rather than a replacement, because replacing a vault deletes its items. An imported vault takes the configured value without checking it.
 - `description` (String) The description of the vault.
 - `group_permissions` (Block Set) Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name. (see [below for nested schema](#nestedblock--group_permissions))
 
