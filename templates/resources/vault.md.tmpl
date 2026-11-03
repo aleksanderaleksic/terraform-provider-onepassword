@@ -1,0 +1,62 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+## Example Usage
+
+{{ tffile "examples/resources/onepassword_vault/resource.tf" }}
+
+## Deleting a vault
+
+Destroying the resource deletes the vault together with every item in it, and the items can't be recovered from Terraform. Set `lifecycle { prevent_destroy = true }` on every vault that holds secrets, as in the example above.
+
+Changing `allow_admins_access` never replaces a vault. 1Password only accepts it when the vault is created, so a change is an error. To change it, change it in 1Password and update the configuration to match.
+
+## Group permissions
+
+Each `group_permissions` block sets the complete permission set of one group. A group that is not in any block is not managed. The resource does not grant or revoke its access, and changes to its access are not detected. Removing a block revokes that group's access.
+
+Groups are identified by UUID. Use the `onepassword_group` data source to look a group up by name.
+
+The permission names follow the 1Password SDK. Some are named differently in the 1Password apps and the `op` CLI:
+
+| Permission | Name in the 1Password apps and `op` |
+|---|---|
+| `read_items` | `view_items` |
+| `reveal_item_password` | `view_and_copy_passwords` |
+| `update_items` | `edit_items` |
+| `update_item_history` | `view_item_history` |
+| `send_items` | `copy_and_share_items` |
+
+The other permissions have the same name in both places: `create_items`, `archive_items`, `delete_items`, `import_items`, `export_items`, `print_items`, `manage_vault`, and `no_access`, which can't be combined with any other permission. Which permissions depend on each other depends on the account type, and 1Password rejects a set that is missing a dependency when the plan is applied.
+
+## Importing an existing vault
+
+{{ tffile "examples/resources/onepassword_vault/import.tf" }}
+
+Or with the CLI:
+
+{{ codefile "shell" "examples/resources/onepassword_vault/import.sh" }}
+
+After an import:
+
+- **Group access is not adopted.** State holds no groups, so the first plan shows the configured `group_permissions` as added. If a configured group already has access with other permissions, the plan warns with its current and its planned permissions, because applying replaces them. Check these warnings before applying, for example for Administrators.
+- **`allow_admins_access` takes the configured value.** It is never read from 1Password, so it is not checked against the vault.
+
+Creating a vault fails when a vault with the same name already exists. 1Password allows several vaults with one name, so this check stops a vault that should have been imported from being created a second time.
+
+## Limitations
+
+- **Not available with 1Password Connect.** Use service account or desktop app authentication.
+- **Service accounts** can only access vaults assigned to them or created by them. They can't manage a vault created with another authentication method or update vault metadata. They can only delete a vault, or manage its group permissions, if they created it.
+- **`allow_admins_access` is not read back**, so a change made in 1Password is not detected.
+- **Access for individual users is not managed**, only access for groups.
+
+{{ .SchemaMarkdown | trimspace }}

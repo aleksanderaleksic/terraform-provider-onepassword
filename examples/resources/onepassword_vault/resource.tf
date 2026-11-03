@@ -1,10 +1,13 @@
+data "onepassword_group" "developers" {
+  name = "Developers"
+}
+
 resource "onepassword_vault" "example" {
-  name                = "Terraform managed vault"
-  description         = "Managed by Terraform"
-  allow_admins_access = true
+  name        = "Terraform managed vault"
+  description = "Managed by Terraform"
 
   group_permissions {
-    group_id = "2hinhvewsxob5p3he2cr2ylihy"
+    group_id = data.onepassword_group.developers.uuid
     permissions = [
       "read_items",
       "reveal_item_password",
@@ -14,9 +17,12 @@ resource "onepassword_vault" "example" {
   }
 
   group_permissions {
-    group_id = "3gjoowf6ofrcjldq5z7v6h3cde"
-    permissions = [
-      "read_items",
-    ]
+    group_id    = "3gjoowf6ofrcjldq5z7v6h3cde"
+    permissions = ["read_items"]
+  }
+
+  # Destroying a vault deletes every item in it.
+  lifecycle {
+    prevent_destroy = true
   }
 }
