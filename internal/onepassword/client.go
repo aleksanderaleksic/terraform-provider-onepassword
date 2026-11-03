@@ -21,6 +21,10 @@ type Client interface {
 	GetFileContent(ctx context.Context, file *model.ItemFile, itemUUid, vaultUuid string) ([]byte, error)
 	// GetEnvironmentVariables reads variables from a 1Password Environment. Only supported when using the 1Password SDK (service account or desktop app); not supported with 1Password Connect.
 	GetEnvironmentVariables(ctx context.Context, environmentID string) ([]model.EnvironmentVariable, error)
+	// GetGroup reads a group by its UUID. Only supported when using the 1Password SDK (service account or desktop app); not supported with 1Password Connect.
+	GetGroup(ctx context.Context, uuid string) (*model.Group, error)
+	// GetGroupsByName finds groups by name. Only supported when using the 1Password SDK (service account or desktop app); not supported with 1Password Connect.
+	GetGroupsByName(ctx context.Context, name string) ([]model.Group, error)
 }
 
 type ClientConfig struct {

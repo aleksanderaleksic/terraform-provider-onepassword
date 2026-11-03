@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	sdk "github.com/1password/onepassword-sdk-go"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/model"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/util"
@@ -14,6 +16,7 @@ import (
 type Client struct {
 	sdkClient *sdk.Client
 	config    SDKConfig
+	groups    groupCache
 }
 
 type SDKConfig struct {
@@ -223,6 +226,115 @@ func (c *Client) GetEnvironmentVariables(ctx context.Context, environmentID stri
 			Name:   v.Name,
 			Value:  v.Value,
 			Masked: v.Masked,
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) GetGroup(ctx context.Context, uuid string) (*model.Group, error) {
+	group, err := c.sdkClient.Groups().Get(ctx, uuid, sdk.GroupGetParams{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get group using sdk: %w", err)
+	}
+
+	result := &model.Group{}
+	result.FromSDKGroup(&group)
+	return result, nil
+}
+
+// GetGroupsByName finds groups by name. The SDK cannot list groups, so it
+// compares the names of the groups that have access to the vaults the caller
+// can see. A group without access to any of those vaults is not found.
+func (c *Client) GetGroupsByName(ctx context.Context, name string) ([]model.Group, error) {
+	return c.groups.byName(ctx, name, func(ctx context.Context) ([]model.Group, error) {
+		vaults, err := c.sdkClient.Vaults().List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list vaults using sdk: %w", err)
+		}
+
+		vaultIDs := make([]string, len(vaults))
+		for i, vault := range vaults {
+			vaultIDs[i] = vault.ID
+		}
+		return collectGroups(ctx, vaultIDs, c.vaultGroupIDs, c.GetGroup)
+	})
+}
+
+// groupCache keeps the groups found by one scan of the vaults, so that every
+// lookup by name in a run shares a single scan.
+type groupCache struct {
+	mu     sync.Mutex
+	loaded bool
+	groups []model.Group
+}
+
+func (c *groupCache) byName(ctx context.Context, name string, load func(ctx context.Context) ([]model.Group, error)) ([]model.Group, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.loaded {
+		groups, err := load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.groups = groups
+		c.loaded = true
+	}
+
+	var result []model.Group
+	for _, group := range c.groups {
+		if group.Name == name {
+			result = append(result, group)
+		}
+	}
+	return result, nil
+}
+
+// vaultGroupIDs returns the UUIDs of the groups that have access to a vault.
+func (c *Client) vaultGroupIDs(ctx context.Context, vaultID string) ([]string, error) {
+	accessors := true
+	vault, err := c.sdkClient.Vaults().Get(ctx, vaultID, sdk.VaultGetParams{Accessors: &accessors})
+	if err != nil {
+		return nil, err
+	}
+
+	var groupIDs []string
+	for _, access := range vault.Access {
+		if access.AccessorType == sdk.VaultAccessorTypeGroup {
+			groupIDs = append(groupIDs, access.AccessorUuid)
+		}
+	}
+	return groupIDs, nil
+}
+
+// collectGroups reads every group with access to one of vaultIDs once. A vault
+// whose access can't be read is skipped, since the caller may see a vault
+// without being allowed to see who else can.
+func collectGroups(
+	ctx context.Context,
+	vaultIDs []string,
+	groupIDsOf func(ctx context.Context, vaultID string) ([]string, error),
+	getGroup func(ctx context.Context, groupID string) (*model.Group, error),
+) ([]model.Group, error) {
+	seen := make(map[string]struct{})
+	var result []model.Group
+	for _, vaultID := range vaultIDs {
+		groupIDs, err := groupIDsOf(ctx, vaultID)
+		if err != nil {
+			tflog.Warn(ctx, "skipping vault whose access could not be read", map[string]any{"vault_uuid": vaultID, "error": err.Error()})
+			continue
+		}
+		for _, groupID := range groupIDs {
+			if _, done := seen[groupID]; done {
+				continue
+			}
+			seen[groupID] = struct{}{}
+
+			group, err := getGroup(ctx, groupID)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, *group)
 		}
 	}
 	return result, nil
