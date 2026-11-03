@@ -711,7 +711,7 @@ func vaultAndItemUUID(tfID string) (vaultUUID, itemUUID string) {
 // isNotFoundError checks if an error indicates that a resource was not found.
 // Different client implementations return different error when item is not found:
 //   - Connect: "status 404: item ... not found"
-//   - SDK: "item couldn't be found" (when item doesn't exist)
+//   - SDK: "item couldn't be found" / "vault couldn't be found" (when it doesn't exist)
 //   - SDK: "item is not in an active state" (when item was removed)
 func isNotFoundError(err error) bool {
 	if err == nil {
@@ -720,7 +720,7 @@ func isNotFoundError(err error) bool {
 	errMsg := strings.ToLower(err.Error())
 	return strings.Contains(errMsg, "404") ||
 		strings.Contains(errMsg, "not found") ||
-		strings.Contains(errMsg, "item couldn't be found") ||
+		strings.Contains(errMsg, "couldn't be found") ||
 		strings.Contains(errMsg, "item is not in an active state")
 }
 

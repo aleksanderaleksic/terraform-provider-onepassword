@@ -27,6 +27,7 @@ import (
 var _ resource.Resource = &OnePasswordVaultResource{}
 var _ resource.ResourceWithImportState = &OnePasswordVaultResource{}
 var _ resource.ResourceWithValidateConfig = &OnePasswordVaultResource{}
+var _ resource.ResourceWithModifyPlan = &OnePasswordVaultResource{}
 
 var vaultPermissionValues = map[string]uint32{
 	"no_access":            model.VaultPermissionNoAccess,
@@ -86,7 +87,7 @@ func (r *OnePasswordVaultResource) Metadata(_ context.Context, req resource.Meta
 
 func (r *OnePasswordVaultResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.",
+		MarkdownDescription: "Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Creating a vault fails when one with the same name already exists; import it instead. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "The Terraform resource identifier in the format `vaults/<vault_id>`.",
@@ -122,7 +123,7 @@ func (r *OnePasswordVaultResource) Schema(_ context.Context, _ resource.SchemaRe
 		},
 		Blocks: map[string]schema.Block{
 			"group_permissions": schema.SetNestedBlock{
-				MarkdownDescription: "Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name.",
+				MarkdownDescription: "Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. When a group starts being managed while it already has different access, the plan warns which permissions applying replaces. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"group_id": schema.StringAttribute{
@@ -208,10 +209,92 @@ func (r *OnePasswordVaultResource) ValidateConfig(ctx context.Context, req resou
 	}
 }
 
+// ModifyPlan warns when a group that this resource does not manage yet already
+// has different access to the vault. State holds only managed groups, so the
+// plan would show its permissions as added and hide that applying replaces
+// them, typically right after an import.
+func (r *OnePasswordVaultResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || r.vaultManager == nil {
+		return
+	}
+
+	var plan OnePasswordVaultResourceModel
+	var state OnePasswordVaultResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || plan.GroupPermissions.IsUnknown() {
+		return
+	}
+
+	previous, diagnostics := vaultAccessFromTerraform(ctx, state.GroupPermissions)
+	resp.Diagnostics.Append(diagnostics...)
+	desired, diagnostics := vaultAccessFromTerraform(ctx, plan.GroupPermissions)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	previousByGroup := vaultAccessByGroup(previous)
+	var newlyManaged []model.VaultGroupAccess
+	for _, access := range desired {
+		if _, managed := previousByGroup[access.GroupID]; !managed && access.GroupID != "" {
+			newlyManaged = append(newlyManaged, access)
+		}
+	}
+	if len(newlyManaged) == 0 {
+		return
+	}
+
+	uuid := vaultUUIDFromTerraformID(state.ID.ValueString())
+	vault, err := r.vaultManager.GetVaultDetails(ctx, uuid)
+	if err != nil {
+		resp.Diagnostics.AddError("1Password Vault read error", fmt.Sprintf("Could not get vault %q: %s", uuid, err))
+		return
+	}
+	for _, warning := range overwrittenAccessWarnings(newlyManaged, vault.GroupAccess) {
+		resp.Diagnostics.AddAttributeWarning(path.Root("group_permissions"), "Existing group access will be replaced", warning)
+	}
+}
+
+// overwrittenAccessWarnings describes each desired group that already has
+// access with a different permission set.
+func overwrittenAccessWarnings(desired, actual []model.VaultGroupAccess) []string {
+	actualByGroup := vaultAccessByGroup(actual)
+	var warnings []string
+	for _, access := range desired {
+		current, exists := actualByGroup[access.GroupID]
+		if !exists || current.Permissions == access.Permissions {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"Group %q already has access to this vault that this resource does not manage yet. Applying replaces its permissions [%s] with [%s].",
+			access.GroupID,
+			strings.Join(permissionNamesFromBitmask(current.Permissions), ", "),
+			strings.Join(permissionNamesFromBitmask(access.Permissions), ", "),
+		))
+	}
+	return warnings
+}
+
 func (r *OnePasswordVaultResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan OnePasswordVaultResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// 1Password allows several vaults with the same name, so a vault that should
+	// have been imported would otherwise be created a second time.
+	existing, err := r.vaultManager.GetVaultsByTitle(ctx, plan.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("1Password Vault create error", fmt.Sprintf("Could not check for an existing vault named %q: %s", plan.Name.ValueString(), err))
+		return
+	}
+	if len(existing) > 0 {
+		resp.Diagnostics.AddError(
+			"1Password Vault already exists",
+			fmt.Sprintf("A vault named %q already exists (vaults/%s). Import it instead of creating another one with the same name.", plan.Name.ValueString(), existing[0].ID),
+		)
 		return
 	}
 
@@ -476,17 +559,10 @@ func terraformPermissionsFromBitmask(ctx context.Context, bitmask uint32) (types
 		return result, diagnostics
 	}
 
+	names := permissionNamesFromBitmask(bitmask)
 	remaining := bitmask
-	names := make([]string, 0, len(vaultPermissionValues))
-	for _, name := range vaultPermissionNames {
-		permission := vaultPermissionValues[name]
-		if permission == model.VaultPermissionNoAccess {
-			continue
-		}
-		if bitmask&permission != 0 {
-			names = append(names, name)
-			remaining &^= permission
-		}
+	for _, name := range names {
+		remaining &^= vaultPermissionValues[name]
 	}
 	if remaining != 0 {
 		diagnostics.AddError("Unsupported vault permission bitmask", fmt.Sprintf("1Password returned unknown permission bits %d.", remaining))
@@ -546,4 +622,20 @@ func (m createOnlyBool) PlanModifyBool(_ context.Context, req planmodifier.BoolR
 		"Attribute can only be set at creation",
 		fmt.Sprintf("1Password does not allow changing %s on an existing vault. Change it in 1Password and update the configuration to match, or create a new vault.", req.Path),
 	)
+}
+
+// permissionNamesFromBitmask returns the sorted names of the known permissions
+// set in bitmask, or no_access when none are.
+func permissionNamesFromBitmask(bitmask uint32) []string {
+	if bitmask == model.VaultPermissionNoAccess {
+		return []string{"no_access"}
+	}
+	names := make([]string, 0, len(vaultPermissionValues))
+	for _, name := range vaultPermissionNames {
+		permission := vaultPermissionValues[name]
+		if permission != model.VaultPermissionNoAccess && bitmask&permission != 0 {
+			names = append(names, name)
+		}
+	}
+	return names
 }

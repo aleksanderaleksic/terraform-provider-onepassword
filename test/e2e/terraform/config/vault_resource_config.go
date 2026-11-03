@@ -31,3 +31,10 @@ func VaultResourceConfig(name, description string, allowAdminsAccess bool, group
 		return config.String()
 	}
 }
+
+// VaultResourceConfigNamed is a vault with only a name, under its own resource name.
+func VaultResourceConfigNamed(resourceName, name string) func() string {
+	return func() string {
+		return fmt.Sprintf("resource \"onepassword_vault\" %s {\n  name = %s\n}\n", strconv.Quote(resourceName), strconv.Quote(name))
+	}
+}

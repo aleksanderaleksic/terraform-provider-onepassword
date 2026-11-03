@@ -3,10 +3,12 @@ package integration
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 
 	tfconfig "github.com/1Password/terraform-provider-onepassword/v3/test/e2e/terraform/config"
@@ -87,16 +89,57 @@ func TestAccVaultResource(t *testing.T) {
 		})
 	}
 
+	// Import into fresh state and apply the configuration that created the
+	// vault: it must update in place, never replace the vault, and warn about
+	// the group access it would overwrite.
+	finalDescription := description
+	if os.Getenv("OP_ACCOUNT") != "" {
+		finalDescription = updatedDescription
+	}
+	var importedPermissions []string
+	if groupID != "" {
+		importedPermissions = []string{"read_items"}
+	}
+	importedConfig := tfconfig.CreateConfigBuilder()(
+		tfconfig.ProviderConfig(),
+		tfconfig.VaultResourceConfig(name, finalDescription, false, groupID, importedPermissions),
+	)
+	steps = append(steps,
+		// Forget the vault without deleting it, as if it had been created outside.
+		resource.TestStep{
+			Config: tfconfig.CreateConfigBuilder()(tfconfig.ProviderConfig()) + `
+removed {
+  from = onepassword_vault.test_vault
+}
+`,
+		},
+		resource.TestStep{
+			Config:             importedConfig,
+			ResourceName:       "onepassword_vault.test_vault",
+			ImportState:        true,
+			ImportStatePersist: true,
+			ImportStateIdFunc:  vaultImportID(&vaultUUID),
+		},
+		resource.TestStep{
+			Config: importedConfig,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("onepassword_vault.test_vault", plancheck.ResourceActionUpdate),
+				},
+			},
+		},
+		// A second vault with the same name is refused instead of created.
+		resource.TestStep{
+			Config:      importedConfig + tfconfig.VaultResourceConfigNamed("duplicate", name)(),
+			ExpectError: regexp.MustCompile(`already exists`),
+		},
+	)
+
 	steps = append(steps,
 		resource.TestStep{
-			ResourceName: "onepassword_vault.test_vault",
-			ImportState:  true,
-			ImportStateIdFunc: func(_ *terraform.State) (string, error) {
-				if vaultUUID == "" {
-					return "", fmt.Errorf("vault UUID was not captured")
-				}
-				return "vaults/" + vaultUUID, nil
-			},
+			ResourceName:            "onepassword_vault.test_vault",
+			ImportState:             true,
+			ImportStateIdFunc:       vaultImportID(&vaultUUID),
 			ImportStateVerify:       true,
 			ImportStateVerifyIgnore: []string{"allow_admins_access", "group_permissions"},
 		},
@@ -109,4 +152,13 @@ func TestAccVaultResource(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps:                    steps,
 	})
+}
+
+func vaultImportID(vaultUUID *string) resource.ImportStateIdFunc {
+	return func(_ *terraform.State) (string, error) {
+		if *vaultUUID == "" {
+			return "", fmt.Errorf("vault UUID was not captured")
+		}
+		return "vaults/" + *vaultUUID, nil
+	}
 }

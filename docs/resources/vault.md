@@ -3,12 +3,12 @@
 page_title: "onepassword_vault Resource - onepassword"
 subcategory: ""
 description: |-
-  Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.
+  Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Creating a vault fails when one with the same name already exists; import it instead. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.
 ---
 
 # onepassword_vault (Resource)
 
-Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.
+Manages a 1Password vault using service account or desktop app authentication. Vault management is not available with 1Password Connect. Creating a vault fails when one with the same name already exists; import it instead. Service accounts can only access vaults assigned to them or created by them, cannot manage vaults created using another authentication method, cannot update vault metadata, and can only delete or manage group permissions for vaults they created.
 
 ## Example Usage
 
@@ -48,7 +48,7 @@ resource "onepassword_vault" "example" {
 
 - `allow_admins_access` (Boolean) Whether members of the Administrators group can access the vault. Defaults to `true`. 1Password only accepts it when the vault is created: changing it later is an error rather than a replacement, because replacing a vault deletes its items. An imported vault takes the configured value without checking it.
 - `description` (String) The description of the vault.
-- `group_permissions` (Block Set) Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name. (see [below for nested schema](#nestedblock--group_permissions))
+- `group_permissions` (Block Set) Group access managed by this resource. Repeat this block to manage multiple groups. Groups omitted from this block are not managed, and importing a vault does not automatically adopt its existing group access. When a group starts being managed while it already has different access, the plan warns which permissions applying replaces. The 1Password SDK currently identifies groups by UUID and does not expose lookup by name. (see [below for nested schema](#nestedblock--group_permissions))
 
 ### Read-Only
 

@@ -28,6 +28,7 @@ type Client interface {
 // or managing permissions on them.
 type VaultManager interface {
 	GetVaultDetails(ctx context.Context, uuid string) (*model.Vault, error)
+	GetVaultsByTitle(ctx context.Context, title string) ([]model.Vault, error)
 	CreateVault(ctx context.Context, vault *model.Vault, allowAdminsAccess bool) (*model.Vault, error)
 	UpdateVault(ctx context.Context, vault *model.Vault) (*model.Vault, error)
 	DeleteVault(ctx context.Context, uuid string) error

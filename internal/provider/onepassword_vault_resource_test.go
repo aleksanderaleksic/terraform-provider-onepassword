@@ -2,10 +2,15 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -109,18 +114,31 @@ func TestVaultUUIDFromTerraformID(t *testing.T) {
 // fakeVaultManager records the permission calls the resource makes against a
 // vault whose actual group access is fixed.
 type fakeVaultManager struct {
-	actual  []model.VaultGroupAccess
-	granted []model.VaultGroupAccess
-	updated []model.VaultGroupAccess
-	revoked []string
+	actual   []model.VaultGroupAccess
+	existing []model.Vault
+	getErr   error
+	created  bool
+	granted  []model.VaultGroupAccess
+	updated  []model.VaultGroupAccess
+	revoked  []string
 }
 
 func (f *fakeVaultManager) GetVaultDetails(_ context.Context, uuid string) (*model.Vault, error) {
-	return &model.Vault{ID: uuid, GroupAccess: f.actual}, nil
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return &model.Vault{ID: uuid, Name: "test-vault", GroupAccess: f.actual}, nil
+}
+
+func (f *fakeVaultManager) GetVaultsByTitle(_ context.Context, _ string) ([]model.Vault, error) {
+	return f.existing, nil
 }
 
 func (f *fakeVaultManager) CreateVault(_ context.Context, vault *model.Vault, _ bool) (*model.Vault, error) {
-	return vault, nil
+	f.created = true
+	created := *vault
+	created.ID = "created"
+	return &created, nil
 }
 
 func (f *fakeVaultManager) UpdateVault(_ context.Context, vault *model.Vault) (*model.Vault, error) {
@@ -221,5 +239,132 @@ func TestCreateOnlyBool(t *testing.T) {
 				t.Error("planned a replacement")
 			}
 		})
+	}
+}
+
+// vaultTestModel builds state or plan values for the vault resource schema.
+func vaultTestModel(t *testing.T, groups []OnePasswordVaultGroupPermissionModel) (fwschema schema.Schema, value tftypes.Value) {
+	t.Helper()
+	ctx := context.Background()
+	schemaResp := &fwresource.SchemaResponse{}
+	(&OnePasswordVaultResource{}).Schema(ctx, fwresource.SchemaRequest{}, schemaResp)
+
+	groupType := types.ObjectType{AttrTypes: vaultGroupPermissionAttrTypes}
+	groupSet := types.SetNull(groupType)
+	if groups != nil {
+		var diagnostics diag.Diagnostics
+		groupSet, diagnostics = types.SetValueFrom(ctx, groupType, groups)
+		if diagnostics.HasError() {
+			t.Fatal(diagnostics)
+		}
+	}
+	state := tfsdk.State{Schema: schemaResp.Schema, Raw: tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil)}
+	diagnostics := state.Set(ctx, &OnePasswordVaultResourceModel{
+		ID:                types.StringValue("vaults/vault"),
+		UUID:              types.StringValue("vault"),
+		Name:              types.StringValue("test-vault"),
+		Description:       types.StringNull(),
+		AllowAdminsAccess: types.BoolValue(true),
+		GroupPermissions:  groupSet,
+	})
+	if diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	return schemaResp.Schema, state.Raw
+}
+
+func testGroup(t *testing.T, groupID string, permissions ...string) OnePasswordVaultGroupPermissionModel {
+	t.Helper()
+	set, diagnostics := types.SetValueFrom(context.Background(), types.StringType, permissions)
+	if diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	return OnePasswordVaultGroupPermissionModel{GroupID: types.StringValue(groupID), Permissions: set}
+}
+
+func TestVaultReadRemovesDeletedVault(t *testing.T) {
+	ctx := context.Background()
+	s, raw := vaultTestModel(t, nil)
+	r := &OnePasswordVaultResource{vaultManager: &fakeVaultManager{
+		// The SDK's error for a vault that no longer exists.
+		getErr: errors.New("failed to get vault details using sdk: vault couldn't be found"),
+	}}
+
+	resp := &fwresource.ReadResponse{State: tfsdk.State{Schema: s, Raw: raw}}
+	r.Read(ctx, fwresource.ReadRequest{State: tfsdk.State{Schema: s, Raw: raw}}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected error: %v", resp.Diagnostics)
+	}
+	if !resp.State.Raw.IsNull() {
+		t.Error("deleted vault was kept in state")
+	}
+}
+
+func TestVaultCreateRejectsExistingName(t *testing.T) {
+	ctx := context.Background()
+	s, raw := vaultTestModel(t, nil)
+	manager := &fakeVaultManager{existing: []model.Vault{{ID: "existing", Name: "test-vault"}}}
+	r := &OnePasswordVaultResource{vaultManager: manager}
+
+	resp := &fwresource.CreateResponse{State: tfsdk.State{Schema: s, Raw: tftypes.NewValue(raw.Type(), nil)}}
+	r.Create(ctx, fwresource.CreateRequest{Plan: tfsdk.Plan{Schema: s, Raw: raw}}, resp)
+
+	if !resp.Diagnostics.HasError() || !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "vaults/existing") {
+		t.Fatalf("expected an error naming the existing vault, got %v", resp.Diagnostics)
+	}
+	if manager.created {
+		t.Error("created a second vault with the same name")
+	}
+}
+
+func TestVaultModifyPlanWarnsWhenReplacingUnmanagedAccess(t *testing.T) {
+	ctx := context.Background()
+	admins := model.VaultPermissionManageVault | model.VaultPermissionReadItems | model.VaultPermissionCreateItems
+	r := &OnePasswordVaultResource{vaultManager: &fakeVaultManager{actual: []model.VaultGroupAccess{
+		{GroupID: "admins", Permissions: admins},
+		{GroupID: "same", Permissions: model.VaultPermissionReadItems},
+	}}}
+
+	// State right after an import: no managed groups.
+	s, stateRaw := vaultTestModel(t, nil)
+	_, planRaw := vaultTestModel(t, []OnePasswordVaultGroupPermissionModel{
+		testGroup(t, "admins", "manage_vault"),
+		testGroup(t, "same", "read_items"),
+		testGroup(t, "new", "read_items"),
+	})
+
+	resp := &fwresource.ModifyPlanResponse{Plan: tfsdk.Plan{Schema: s, Raw: planRaw}}
+	r.ModifyPlan(ctx, fwresource.ModifyPlanRequest{
+		State: tfsdk.State{Schema: s, Raw: stateRaw},
+		Plan:  tfsdk.Plan{Schema: s, Raw: planRaw},
+	}, resp)
+
+	warnings := resp.Diagnostics.Warnings()
+	if resp.Diagnostics.HasError() || len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %v", resp.Diagnostics)
+	}
+	detail := warnings[0].Detail()
+	if !strings.Contains(detail, `"admins"`) || !strings.Contains(detail, "[create_items, manage_vault, read_items] with [manage_vault]") {
+		t.Errorf("warning does not show current and planned permissions: %s", detail)
+	}
+}
+
+func TestVaultModifyPlanSilentForManagedGroups(t *testing.T) {
+	ctx := context.Background()
+	r := &OnePasswordVaultResource{vaultManager: &fakeVaultManager{
+		getErr: errors.New("must not read the vault when no new group is managed"),
+	}}
+	s, stateRaw := vaultTestModel(t, []OnePasswordVaultGroupPermissionModel{testGroup(t, "devs", "read_items")})
+	_, planRaw := vaultTestModel(t, []OnePasswordVaultGroupPermissionModel{testGroup(t, "devs", "read_items", "create_items")})
+
+	resp := &fwresource.ModifyPlanResponse{Plan: tfsdk.Plan{Schema: s, Raw: planRaw}}
+	r.ModifyPlan(ctx, fwresource.ModifyPlanRequest{
+		State: tfsdk.State{Schema: s, Raw: stateRaw},
+		Plan:  tfsdk.Plan{Schema: s, Raw: planRaw},
+	}, resp)
+
+	if len(resp.Diagnostics) != 0 {
+		t.Errorf("expected no diagnostics, got %v", resp.Diagnostics)
 	}
 }
