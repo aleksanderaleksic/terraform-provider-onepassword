@@ -1,0 +1,46 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+## Example Usage
+
+{{ tffile "examples/resources/onepassword_connect_token/resource.tf" }}
+
+## Requirements
+
+Like `onepassword_connect_server`, this resource runs the 1Password CLI (`op`) and needs desktop app authentication: set `account` in the provider configuration. Service accounts and Connect can't issue Connect tokens.
+
+## The token
+
+`op` shows a token only when it is issued. The resource writes it to a secure note, `token_title` in `token_vault`. The note's section `Connect token` holds these fields:
+
+| Field | Value |
+|---|---|
+| `token` | The token (concealed) |
+| `server_id` | The UUID of the Connect server |
+| `token_id` | The ID of the token |
+
+The token never reaches state or plan. Read it with the ephemeral `onepassword_item`, as in the example above. If the item can't be written, the new token is revoked again.
+
+## Changes and rotation
+
+- **`name`** can be changed. The token is renamed.
+- **Every other attribute** issues a new token, writes it to a new item, and revokes the old token. To rotate a token without other changes, replace it: `tofu apply -replace=onepassword_connect_token.<name>`.
+- **A token revoked outside Terraform**, or whose server was deleted, is removed from state, and the next apply issues a new one.
+- **A deleted token item** makes the plan warn. Replace the token to issue a new one.
+
+Every vault in `vaults` must be one the Connect server can access. `access` limits the token to `read` or `write`; without it the token has the server's access.
+
+## Limitations
+
+- **No import.** A token can't be shown again, so an existing token can't be imported.
+- **Names must be unique among the server's active tokens**, because `op` only prints the token and the resource finds its ID by name.
+
+{{ .SchemaMarkdown | trimspace }}
