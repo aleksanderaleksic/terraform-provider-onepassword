@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	sdk "github.com/1password/onepassword-sdk-go"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
+	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/cli"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/model"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/util"
 )
@@ -443,6 +445,20 @@ func collectGroups(
 		}
 	}
 	return result, nil
+}
+
+// CLI returns a client for the 1Password CLI signed in as the provider's
+// account. Service accounts can't manage Connect servers or create service
+// accounts, so only desktop app authentication has one.
+func (c *Client) CLI() (*cli.Client, error) {
+	if c.config.Account == "" {
+		return nil, errors.New("this requires desktop app authentication: set `account` in the provider configuration. Service accounts and 1Password Connect can't do this")
+	}
+	runner, err := cli.NewExecRunner(c.config.Account)
+	if err != nil {
+		return nil, err
+	}
+	return cli.NewClient(runner), nil
 }
 
 func NewClient(ctx context.Context, config SDKConfig) (*Client, error) {

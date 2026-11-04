@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/cli"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/connect"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/model"
 	"github.com/1Password/terraform-provider-onepassword/v3/internal/onepassword/sdk"
@@ -39,6 +40,12 @@ type VaultManager interface {
 	GrantVaultGroupPermissions(ctx context.Context, uuid string, access []model.VaultGroupAccess) error
 	UpdateVaultGroupPermissions(ctx context.Context, uuid string, access []model.VaultGroupAccess) error
 	RevokeVaultGroupPermission(ctx context.Context, uuid, groupID string) error
+}
+
+// CLIProvider is implemented by clients that can run the 1Password CLI (op)
+// for operations the SDK lacks, such as managing Connect servers.
+type CLIProvider interface {
+	CLI() (*cli.Client, error)
 }
 
 type ClientConfig struct {
