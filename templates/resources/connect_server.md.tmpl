@@ -1,0 +1,50 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+## Example Usage
+
+{{ tffile "examples/resources/onepassword_connect_server/resource.tf" }}
+
+## Requirements
+
+The 1Password SDK can't manage Connect servers, so this resource runs the 1Password CLI. That has two requirements:
+
+- **Desktop app authentication.** Set `account` in the provider configuration. With `service_account_token` or Connect credentials the resource fails when it is planned: service accounts and Connect can't create, read or delete Connect servers. `op` refuses to create one for a service account, and a service account doesn't see any servers. This means the resource can't run in CI with a service account. Someone runs it with their own account.
+- **The 1Password CLI (`op`) on `PATH`**, integrated with the desktop app. The provider runs it as the configured account and ignores `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN`.
+
+## Credentials
+
+`op` writes a Connect server's credentials file (`1password-credentials.json`) only when the server is created, and can't return it again. The resource writes it to a secure note, `credentials_title` in `credentials_vault`, and deletes the file. The note's section `Connect server` holds these fields:
+
+| Field | Value |
+|---|---|
+| `credentials` | The contents of `1password-credentials.json` (concealed) |
+| `server_id` | The UUID of the Connect server |
+| `server_name` | The name of the Connect server |
+
+The credentials never reach state or plan. Read them with the ephemeral `onepassword_item`, as in the example above. If the item can't be written, the new server is deleted again, because it would be useless without its credentials.
+
+`credentials_vault` and `credentials_title` can only be set when the server is created. If the item is deleted, the plan warns, and the credentials are gone for good. Replace the server to get new ones: `tofu apply -replace=onepassword_connect_server.<name>`.
+
+## Changes and drift
+
+- **`name`** can be changed. The server is renamed.
+- **`vaults`** can be changed. Access is granted to vaults that were added and revoked from vaults that were removed. `op` can't list which vaults a server can access, so access changed outside Terraform is not detected.
+- **A server deleted outside Terraform** is removed from state, and the next apply creates a new one.
+
+Destroying the resource deletes the server and its credentials item. Anything that uses the server, such as 1Password Connect in a cluster, loses access.
+
+## Limitations
+
+- **No import.** The credentials of an existing server can't be read, so it can't be imported. Creating a server fails when one with the same name already exists.
+- **Names must be unique.** `op` also finds servers by name, so the resource refuses a name that is already taken.
+
+{{ .SchemaMarkdown | trimspace }}
