@@ -201,3 +201,25 @@ func TestTokenCommands(t *testing.T) {
 		t.Errorf("calls = %q", runner.calls)
 	}
 }
+
+func TestCreateServiceAccount(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"service-account create ci --raw --vault V1:read_items,write_items --vault V2 --can-create-vaults --expires-in 30d": "ops_secret\n",
+	}}
+	token, err := NewClient(runner).CreateServiceAccount(context.Background(), "ci",
+		[]ServiceAccountVault{{VaultID: "V1", Permissions: []string{"read_items", "write_items"}}, {VaultID: "V2"}}, true, "30d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "ops_secret" {
+		t.Errorf("token = %q", token)
+	}
+}
+
+func TestCreateServiceAccountRejectsUnexpectedOutput(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{"service-account create ci --raw": "Service account created: maybe-secret"}}
+	_, err := NewClient(runner).CreateServiceAccount(context.Background(), "ci", nil, false, "")
+	if err == nil || strings.Contains(err.Error(), "maybe-secret") {
+		t.Errorf("expected an error without the output, got %v", err)
+	}
+}

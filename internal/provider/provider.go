@@ -179,6 +179,7 @@ func (p *OnePasswordProvider) Resources(ctx context.Context) []func() resource.R
 		NewOnePasswordVaultResource,
 		NewOnePasswordConnectServerResource,
 		NewOnePasswordConnectTokenResource,
+		NewOnePasswordServiceAccountResource,
 	}
 }
 
