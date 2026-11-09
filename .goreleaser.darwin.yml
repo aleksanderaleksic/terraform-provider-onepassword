@@ -1,14 +1,15 @@
+# Builds the darwin zips on a macOS runner, since the onepassword-sdk-go desktop
+# app integration needs CGO. The release job in .github/workflows/release.yml
+# publishes them together with the zips from .goreleaser.yml.
 version: 2
 builds:
   - env:
-      # CGO is required for onepassword-sdk-go dependency
       - CGO_ENABLED=1
-      - GOPRIVATE="github.com/1Password"
     mod_timestamp: "{{ .CommitTimestamp }}"
     flags:
       - -trimpath
     ldflags:
-      - "-s -w -X main.commit={{.Commit}} -X version.ProviderVersion={{.Version}}"
+      - "-s -w -X main.version={{ .Version }}"
     goos:
       - darwin
     goarch:
@@ -18,14 +19,7 @@ builds:
 archives:
   - formats: ["zip"]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-# Checksums are generated in the final generate-checksums job to include all platforms
 checksum:
   disable: true
-signs: []
-release:
-  # Use existing draft release created by the Linux job instead of creating a new one
-  use_existing_draft: true
-  # If you want to manually examine the release before its live, uncomment this line:
-  draft: true
 changelog:
   disable: true
